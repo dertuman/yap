@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" width="150" alt="Yap logo">
+</p>
+
 # Yap
 
 Tap right ⌘, talk, tap again. Your words land wherever your cursor is, near instantly, because everything runs on your Mac.
