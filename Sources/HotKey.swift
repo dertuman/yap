@@ -1,28 +1,33 @@
 import AppKit
 import CoreGraphics
 
-/// Watches the right Command key. Hold it to record push-to-talk style,
+/// Watches whichever modifier key the user picked. Hold it to record push-to-talk style,
 /// or tap it (< 0.4s) to latch recording on until the next tap.
 /// Pressing any other key while holding cancels, so real shortcuts still work.
 final class HotKey {
-    private static let rightCommandMask: UInt64 = 0x0010 // NX_DEVICERCMDKEYMASK
-    private static let rightCommandKeyCode: Int64 = 54
-
     private enum State {
         case idle
         case held(since: Date)
         case latched
     }
 
+    private let key: TriggerKey
     private var state = State.idle
     private var tap: CFMachPort?
+    private var source: CFRunLoopSource?
     private let onStart: () -> Void
     private let onStop: () -> Void
     private let onCancel: () -> Void
 
     var isActive: Bool { tap != nil }
 
-    init(onStart: @escaping () -> Void, onStop: @escaping () -> Void, onCancel: @escaping () -> Void) {
+    init(
+        key: TriggerKey,
+        onStart: @escaping () -> Void,
+        onStop: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.key = key
         self.onStart = onStart
         self.onStop = onStop
         self.onCancel = onCancel
@@ -42,9 +47,26 @@ final class HotKey {
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         )
         guard let tap else { return }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
+        source = runLoopSource
         CGEvent.tapEnable(tap: tap, enable: true)
+    }
+
+    deinit { stop() }
+
+    /// Tears the tap down, so a replacement can take over when the trigger key changes.
+    func stop() {
+        if let source {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            self.source = nil
+        }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            self.tap = nil
+        }
+        state = .idle
     }
 
     private func handle(type: CGEventType, event: CGEvent) {
@@ -53,15 +75,15 @@ final class HotKey {
             return
         }
         if type == .flagsChanged {
-            guard event.getIntegerValueField(.keyboardEventKeycode) == Self.rightCommandKeyCode else { return }
-            let isDown = event.flags.rawValue & Self.rightCommandMask != 0
-            DispatchQueue.main.async { isDown ? self.rightCommandDown() : self.rightCommandUp() }
+            guard event.getIntegerValueField(.keyboardEventKeycode) == key.keyCode else { return }
+            let isDown = event.flags.rawValue & key.flagMask != 0
+            DispatchQueue.main.async { isDown ? self.triggerDown() : self.triggerUp() }
         } else if type == .keyDown {
             DispatchQueue.main.async { self.otherKeyDown() }
         }
     }
 
-    private func rightCommandDown() {
+    private func triggerDown() {
         switch state {
         case .idle:
             state = .held(since: Date())
@@ -74,7 +96,7 @@ final class HotKey {
         }
     }
 
-    private func rightCommandUp() {
+    private func triggerUp() {
         guard case .held(let since) = state else { return }
         if Date().timeIntervalSince(since) < 0.4 {
             state = .latched

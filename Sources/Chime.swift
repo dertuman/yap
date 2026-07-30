@@ -17,8 +17,15 @@ final class Chime {
         engine.connect(player, to: engine.mainMixerNode, format: format)
     }
 
-    func recordingStarted() { play(up) }
-    func recordingStopped() { play(down) }
+    func recordingStarted() {
+        guard Settings.shared.soundsEnabled else { return }
+        play(up)
+    }
+
+    func recordingStopped() {
+        guard Settings.shared.soundsEnabled else { return }
+        play(down)
+    }
 
     private func play(_ buffer: AVAudioPCMBuffer?) {
         guard let buffer else { return }

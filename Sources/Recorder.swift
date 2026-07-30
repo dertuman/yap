@@ -28,6 +28,7 @@ final class Recorder {
         tearDown()
         lock.lock(); let recorded = samples; lock.unlock()
         guard recorded.count > 4800 else { return nil } // ignore blips under 0.3s
+        guard hasSpeech(recorded) else { return nil }   // fed silence, Whisper invents "Thank you."
 
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("yap.wav")
         do {
@@ -41,6 +42,33 @@ final class Recorder {
     func cancel() {
         tearDown()
         lock.lock(); samples.removeAll(); lock.unlock()
+    }
+
+    /// True if some stretch of the take is loud enough to be speech. Framed RMS rather than
+    /// peak, since the start tick bleeds through the speakers and would supply the peak in an
+    /// otherwise empty recording. The bar is the louder of a fixed floor and 8 dB over this
+    /// room's own noise, so a hot mic in a loud room does not read as speech.
+    private func hasSpeech(_ samples: [Float]) -> Bool {
+        let frame = 480                                  // 30ms at 16 kHz
+        let skip = min(samples.count, 2048)              // 128ms, where the start tick lands
+        var levels: [Double] = []
+        var i = skip
+        while i + frame <= samples.count {
+            var sum = 0.0
+            for j in i..<(i + frame) { sum += Double(samples[j]) * Double(samples[j]) }
+            levels.append((sum / Double(frame)).squareRoot())
+            i += frame
+        }
+        guard levels.count >= 4 else { return false }
+
+        let noiseFloor = levels.sorted()[levels.count / 10]
+        let threshold = max(0.0025, noiseFloor * 2.5)    // -52 dBFS, or 8 dB over the room
+        var run = 0
+        for level in levels {
+            run = level > threshold ? run + 1 : 0
+            if run >= 3 { return true }                  // 90ms of speech-level audio
+        }
+        return false
     }
 
     private func tearDown() {
