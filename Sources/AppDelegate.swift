@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginRecording() {
         do {
             try recorder.start()
+            Chime.shared.recordingStarted()
             setIcon("mic.fill", tint: .systemRed)
         } catch {
             NSSound.beep()
@@ -57,7 +58,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func endRecording() {
-        guard let wav = recorder.stop() else {
+        let recording = recorder.stop()
+        Chime.shared.recordingStopped()
+        guard let wav = recording else {
             setIcon("mic")
             return
         }
