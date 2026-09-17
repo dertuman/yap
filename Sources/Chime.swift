@@ -60,7 +60,7 @@ final class Chime {
             let tone = body.ping(impulse + burst * 0.5)
             let sheen = air.ping(burst)
             let fade = pow(1 - Double(i) / Double(count), 1.6)
-            channel[i] = Float(saturate(tone * 0.9 + sheen * 0.35, drive: 2) * fade * 0.5)
+            channel[i] = Float(saturate(tone * 0.9 + sheen * 0.35, drive: 2) * fade * 0.1)
         }
         return buffer
     }

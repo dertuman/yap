@@ -35,10 +35,12 @@ This downloads the speech model (574 MB, one time), builds the app, and puts it 
 - Press any other key while holding and it cancels, so real shortcuts still work.
 - The menu bar mic turns red while recording.
 
-Click the menu bar mic for the two settings:
+Click the menu bar mic for the settings:
 
 - **Trigger Key.** Right ⌘ by default. Pick either side of ⌘, ⌥, ⌃, ⇧, or Fn instead. Sides are separate, so left ⇧ can still be shift while right ⇧ dictates.
 - **Start / Stop Sounds.** The little ticks when recording opens and closes. Turn them off if you'd rather work in silence.
+- **History.** Every dictation is saved (transcript plus audio) under `~/Library/Application Support/Yap/history`. Click an entry to copy it back to the clipboard; hold ⌥ to play the recording instead; hover for the full text, date, and duration. Turn off Save History to stop saving transcripts and audio, and Clear History wipes what's there.
+- **Stats.** See your total words, characters (including spaces and punctuation), successful recordings, and recording time. Starts with your existing saved history, then keeps counting, even with Save History off or after clearing history. Only totals are stored, locally on your Mac. Older recordings already removed from history can't be counted. Reset Stats starts the counters over without deleting history.
 
 Want Yap to start when your Mac starts? System Settings > General > Login Items, add Yap.
 

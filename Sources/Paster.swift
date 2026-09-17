@@ -4,7 +4,17 @@ import AppKit
 final class Paster {
     func paste(_ text: String) {
         let pasteboard = NSPasteboard.general
-        let previous = pasteboard.string(forType: .string)
+        // Snapshot every item with all its representations (images, files, rich text),
+        // not just plain strings, so restoring gives back exactly what was there.
+        let previousItems = (pasteboard.pasteboardItems ?? []).map { item -> NSPasteboardItem in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) {
+                    copy.setData(data, forType: type)
+                }
+            }
+            return copy
+        }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
@@ -19,8 +29,8 @@ final class Paster {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             pasteboard.clearContents()
-            if let previous {
-                pasteboard.setString(previous, forType: .string)
+            if !previousItems.isEmpty {
+                pasteboard.writeObjects(previousItems)
             }
         }
     }

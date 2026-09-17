@@ -65,10 +65,14 @@ final class Settings {
 
     private let triggerKeyName = "triggerKey"
     private let soundsName = "soundsEnabled"
+    private let historyName = "historyEnabled"
     private let defaults = UserDefaults.standard
 
     private init() {
-        defaults.register(defaults: [soundsName: true])
+        defaults.register(defaults: [
+            soundsName: true,
+            historyName: true,
+        ])
     }
 
     var triggerKey: TriggerKey {
@@ -79,5 +83,10 @@ final class Settings {
     var soundsEnabled: Bool {
         get { defaults.bool(forKey: soundsName) }
         set { defaults.set(newValue, forKey: soundsName) }
+    }
+
+    var historyEnabled: Bool {
+        get { defaults.bool(forKey: historyName) }
+        set { defaults.set(newValue, forKey: historyName) }
     }
 }

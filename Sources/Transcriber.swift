@@ -44,7 +44,10 @@ final class Transcriber {
     }
 
     // Retries cover the model still loading right after launch.
-    private func attempt(audio: Data, retriesLeft: Int, completion: @escaping (String?) -> Void) {
+    private func attempt(
+        audio: Data, language: String? = nil, retriesLeft: Int,
+        completion: @escaping (String?) -> Void
+    ) {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/inference")!)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
@@ -58,6 +61,9 @@ final class Transcriber {
         }
         field("temperature", "0.0")
         field("response_format", "json")
+        if let language {
+            field("language", language)
+        }
         body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8))
         body.append(audio)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
@@ -67,7 +73,7 @@ final class Transcriber {
             if error != nil {
                 if retriesLeft > 0 {
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                        self.attempt(audio: audio, retriesLeft: retriesLeft - 1, completion: completion)
+                        self.attempt(audio: audio, language: language, retriesLeft: retriesLeft - 1, completion: completion)
                     }
                 } else {
                     completion(nil)
