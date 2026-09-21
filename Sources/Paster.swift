@@ -2,7 +2,18 @@ import AppKit
 
 /// Inserts text at the cursor by borrowing the clipboard for a synthetic Cmd+V.
 final class Paster {
-    func paste(_ text: String) {
+    /// The app the user was typing in when the take started.
+    private var target: pid_t?
+
+    func rememberTarget() {
+        guard let front = NSWorkspace.shared.frontmostApplication,
+              front.processIdentifier != ProcessInfo.processInfo.processIdentifier
+        else { return }
+        target = front.processIdentifier
+    }
+
+    /// False when Accessibility isn't granted. The words stay on the clipboard.
+    func paste(_ text: String) -> Bool {
         let pasteboard = NSPasteboard.general
         // Snapshot every item with all its representations (images, files, rich text),
         // not just plain strings, so restoring gives back exactly what was there.
@@ -17,21 +28,25 @@ final class Paster {
         }
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        guard AXIsProcessTrusted() || CGPreflightPostEventAccess() else { return false }
 
         let source = CGEventSource(stateID: .combinedSessionState)
-        let vKey: CGKeyCode = 9
-        let down = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true)
-        let up = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false)
         down?.flags = .maskCommand
         up?.flags = .maskCommand
-        down?.post(tap: .cghidEventTap)
-        up?.post(tap: .cghidEventTap)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            pasteboard.clearContents()
-            if !previousItems.isEmpty {
-                pasteboard.writeObjects(previousItems)
-            }
+        if let target {
+            down?.postToPid(target)
+            up?.postToPid(target)
+        } else {
+            down?.post(tap: .cgAnnotatedSessionEventTap)
+            up?.post(tap: .cgAnnotatedSessionEventTap)
         }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            pasteboard.clearContents()
+            if !previousItems.isEmpty { pasteboard.writeObjects(previousItems) }
+        }
+        return true
     }
 }

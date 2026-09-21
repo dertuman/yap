@@ -11,6 +11,9 @@ final class Chime {
     private let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
     private lazy var up = render(hz: 480, duration: 0.055, brightness: 5, seed: 7)
     private lazy var down = render(hz: 300, duration: 0.075, brightness: 3, seed: 7)
+    private var lastBuffer: AVAudioPCMBuffer?
+    private var replayUntil = Date.distantPast
+    private var routeObserver: NSObjectProtocol?
 
     private init() {
         engine.attach(player)
@@ -29,6 +32,27 @@ final class Chime {
 
     private func play(_ buffer: AVAudioPCMBuffer?) {
         guard let buffer else { return }
+        // The headset dropping into the hands-free codec stops this engine and swallows the tick.
+        lastBuffer = buffer
+        replayUntil = Date().addingTimeInterval(1)
+        armRouteReplay()
+        startAndSchedule(buffer)
+    }
+
+    private func armRouteReplay() {
+        guard routeObserver == nil else { return }
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, Date() < self.replayUntil, let buffer = self.lastBuffer, !self.engine.isRunning else { return }
+            self.replayUntil = .distantPast
+            self.startAndSchedule(buffer)
+        }
+    }
+
+    private func startAndSchedule(_ buffer: AVAudioPCMBuffer) {
         do {
             if !engine.isRunning {
                 engine.prepare()

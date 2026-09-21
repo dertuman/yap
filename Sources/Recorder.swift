@@ -1,27 +1,43 @@
 import AVFoundation
 
 /// Records from the default microphone, downsampled to 16 kHz mono for Whisper.
+/// The engine exists only for the length of a take. An input node left alive keeps a
+/// Bluetooth headset on the hands-free codec, so the mic stays closed until the trigger opens a take.
 final class Recorder {
-    private let engine = AVAudioEngine()
     private let lock = NSLock()
     private var samples: [Float] = []
+    private var engine: AVAudioEngine?
     private var converter: AVAudioConverter?
+    private var configObserver: NSObjectProtocol?
+    private var tapInstalled = false
+    private var restarts = 0
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false
     )!
 
     func start() throws {
+        tearDown()
         lock.lock(); samples.removeAll(); lock.unlock()
+        restarts = 0
 
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        converter = AVAudioConverter(from: format, to: targetFormat)
-        input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            self?.append(buffer)
+        let engine = AVAudioEngine()
+        self.engine = engine
+        // Posted on an audio queue after the engine has stopped itself. Restarting there can deadlock.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.restartAfterConfigurationChange() }
         }
-        engine.prepare()
-        try engine.start()
+
+        do {
+            try installAndStart(engine)
+        } catch {
+            tearDown()
+            throw error
+        }
+        DispatchQueue.main.async { [weak self] in self?.restartAfterConfigurationChange() }
     }
 
     func stop() -> URL? {
@@ -42,6 +58,58 @@ final class Recorder {
     func cancel() {
         tearDown()
         lock.lock(); samples.removeAll(); lock.unlock()
+    }
+
+    /// The hands-free switch stops the engine. Reinstall the tap on the new format.
+    private func restartAfterConfigurationChange() {
+        guard let engine, !engine.isRunning, restarts < 4 else { return }
+        restarts += 1
+        do {
+            try installAndStart(engine)
+        } catch {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.restartAfterConfigurationChange()
+            }
+            return
+        }
+        if !engine.isRunning {
+            DispatchQueue.main.async { [weak self] in self?.restartAfterConfigurationChange() }
+        }
+    }
+
+    private func installAndStart(_ engine: AVAudioEngine) throws {
+        let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0,
+              let converter = AVAudioConverter(from: format, to: targetFormat) else {
+            throw RecorderError.noInput
+        }
+        if tapInstalled {
+            input.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        self.converter = converter
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
+            self?.append(buffer)
+        }
+        tapInstalled = true
+        engine.prepare()
+        try engine.start()
+    }
+
+    private func tearDown() {
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+            self.configObserver = nil
+        }
+        guard let engine else { return }
+        engine.stop()
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        converter = nil
+        self.engine = nil
     }
 
     /// True if some stretch of the take is loud enough to be speech. Framed RMS rather than
@@ -71,11 +139,6 @@ final class Recorder {
         return false
     }
 
-    private func tearDown() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-    }
-
     private func append(_ buffer: AVAudioPCMBuffer) {
         guard let converter else { return }
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
@@ -96,5 +159,8 @@ final class Recorder {
         let chunk = UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength))
         lock.lock(); samples.append(contentsOf: chunk); lock.unlock()
     }
+}
 
+private enum RecorderError: Error {
+    case noInput
 }
