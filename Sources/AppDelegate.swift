@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hintItem: NSMenuItem!
     private var soundsItem: NSMenuItem!
     private var triggerItems: [NSMenuItem] = []
+    private var accessItem: NSMenuItem!
     private var historyMenu: NSMenu!
     private var statsMenu: NSMenu!
     private let stats = Stats.shared
@@ -23,11 +24,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshMenu()
 
         AVCaptureDevice.requestAccess(for: .audio) { _ in }
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        AXIsProcessTrustedWithOptions(options)
+        promptForTriggerAccess()
 
         transcriber.startServer()
         installHotKey()
+    }
+
+    /// The trigger needs Input Monitoring. Pasting the result needs Accessibility.
+    private func promptForTriggerAccess() {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+        if !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
+        if !CGPreflightPostEventAccess() { _ = CGRequestPostEventAccess() }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -40,6 +48,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hintItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         hintItem.isEnabled = false
         menu.addItem(hintItem)
+        accessItem = NSMenuItem(title: "Open Accessibility Settings", action: #selector(openAccessibility), keyEquivalent: "")
+        accessItem.target = self
+        menu.addItem(accessItem)
         menu.addItem(.separator())
 
         let triggerMenu = NSMenu()
@@ -75,9 +86,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
+    @objc private func openAccessibility() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     private func refreshMenu() {
         let key = Settings.shared.triggerKey
-        hintItem.title = "Hold or tap \(key.title) to dictate"
+        let listening = hotKey?.isActive == true
+        let canPaste = AXIsProcessTrusted() || CGPreflightPostEventAccess()
+        if !listening {
+            hintItem.title = "Trigger key needs Accessibility access"
+        } else if !canPaste {
+            hintItem.title = "Enable Accessibility so the text can be pasted"
+        } else {
+            hintItem.title = "Hold or tap \(key.title) to dictate"
+        }
+        accessItem.isHidden = listening && canPaste
         for item in triggerItems {
             item.state = (item.representedObject as? TriggerKey) == key ? .on : .off
         }
@@ -120,9 +145,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.installHotKey()
             }
         }
+        refreshMenu()
     }
 
     private func beginRecording() {
+        paster.rememberTarget()
         do {
             try recorder.start()
             Chime.shared.recordingStarted()
@@ -148,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 if let text, !text.isEmpty {
                     self?.stats.record(text: text, duration: duration)
-                    self?.paster.paste(text)
+                    if self?.paster.paste(text) != true { NSSound.beep() }
                     if let staged { History.shared.commit(staged, text: text) }
                 } else {
                     if let staged { History.shared.discard(staged) }
