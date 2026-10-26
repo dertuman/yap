@@ -6,3 +6,5 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 swiftc Sources/Stats.swift Sources/History.swift Sources/Settings.swift Sources/Wav.swift \
     Tests/StatsTests.swift -o "$TEST_DIR/StatsTests"
 "$TEST_DIR/StatsTests"
+swiftc Sources/ChatStyle.swift Tests/ChatStyleTests.swift -o "$TEST_DIR/ChatStyleTests"
+"$TEST_DIR/ChatStyleTests"

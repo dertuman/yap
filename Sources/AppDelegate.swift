@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var hintItem: NSMenuItem!
     private var soundsItem: NSMenuItem!
+    private var chatStyleItem: NSMenuItem!
     private var triggerItems: [NSMenuItem] = []
     private var accessItem: NSMenuItem!
     private var historyMenu: NSMenu!
@@ -69,6 +70,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         soundsItem.target = self
         menu.addItem(soundsItem)
 
+        chatStyleItem = NSMenuItem(title: "Chat Style", action: #selector(toggleChatStyle), keyEquivalent: "")
+        chatStyleItem.target = self
+        chatStyleItem.toolTip = "Write like a chat message: your slang, no ¿ ¡ or closing periods, lowercase starts.\nHold \u{2325} to edit the style files."
+        menu.addItem(chatStyleItem)
+        let editStyle = NSMenuItem(title: "Edit Chat Style\u{2026}", action: #selector(editChatStyle), keyEquivalent: "")
+        editStyle.target = self
+        editStyle.keyEquivalentModifierMask = .option
+        editStyle.isAlternate = true
+        menu.addItem(editStyle)
+
         historyMenu = NSMenu()
         historyMenu.delegate = self
         let historyItem = NSMenuItem(title: "History", action: nil, keyEquivalent: "")
@@ -107,6 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.state = (item.representedObject as? TriggerKey) == key ? .on : .off
         }
         soundsItem.state = Settings.shared.soundsEnabled ? .on : .off
+        chatStyleItem.state = Settings.shared.chatStyleEnabled ? .on : .off
     }
 
     @objc private func selectTriggerKey(_ sender: NSMenuItem) {
@@ -126,6 +138,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshMenu()
         // Let them hear what they just switched on.
         if Settings.shared.soundsEnabled { Chime.shared.recordingStarted() }
+    }
+
+    @objc private func toggleChatStyle() {
+        Settings.shared.chatStyleEnabled.toggle()
+        refreshMenu()
+    }
+
+    @objc private func editChatStyle() {
+        _ = ChatStyle.load()
+        NSWorkspace.shared.activateFileViewerSelecting([ChatStyle.promptURL, ChatStyle.wordsURL])
     }
 
     // The event tap fails until Accessibility is granted; keep retrying so no relaunch is needed.
@@ -171,8 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Capture now: the next recording can overwrite the temporary WAV.
         let duration = Wav.duration(of: wav)
         let staged = History.shared.stage(wav)
-        transcriber.transcribe(wav) { [weak self] text in
+        let style = Settings.shared.chatStyleEnabled ? ChatStyle.load() : nil
+        transcriber.transcribe(wav, prompt: style?.prompt) { [weak self] raw in
             DispatchQueue.main.async {
+                let text = raw.map { style?.apply($0) ?? $0 }
                 if let text, !text.isEmpty {
                     self?.stats.record(text: text, duration: duration)
                     if self?.paster.paste(text) != true { NSSound.beep() }

@@ -66,12 +66,14 @@ final class Settings {
     private let triggerKeyName = "triggerKey"
     private let soundsName = "soundsEnabled"
     private let historyName = "historyEnabled"
+    private let chatStyleName = "chatStyleEnabled"
     private let defaults = UserDefaults.standard
 
     private init() {
         defaults.register(defaults: [
             soundsName: true,
             historyName: true,
+            chatStyleName: false,
         ])
     }
 
@@ -88,5 +90,10 @@ final class Settings {
     var historyEnabled: Bool {
         get { defaults.bool(forKey: historyName) }
         set { defaults.set(newValue, forKey: historyName) }
+    }
+
+    var chatStyleEnabled: Bool {
+        get { defaults.bool(forKey: chatStyleName) }
+        set { defaults.set(newValue, forKey: chatStyleName) }
     }
 }

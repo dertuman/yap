@@ -35,17 +35,18 @@ final class Transcriber {
         server = nil
     }
 
-    func transcribe(_ wav: URL, completion: @escaping (String?) -> Void) {
+    /// A prompt nudges Whisper toward its wording, spelling and punctuation.
+    func transcribe(_ wav: URL, prompt: String? = nil, completion: @escaping (String?) -> Void) {
         guard let audio = try? Data(contentsOf: wav) else {
             completion(nil)
             return
         }
-        attempt(audio: audio, retriesLeft: 60, completion: completion)
+        attempt(audio: audio, prompt: prompt, retriesLeft: 60, completion: completion)
     }
 
     // Retries cover the model still loading right after launch.
     private func attempt(
-        audio: Data, language: String? = nil, retriesLeft: Int,
+        audio: Data, prompt: String? = nil, language: String? = nil, retriesLeft: Int,
         completion: @escaping (String?) -> Void
     ) {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/inference")!)
@@ -64,6 +65,9 @@ final class Transcriber {
         if let language {
             field("language", language)
         }
+        if let prompt, !prompt.isEmpty {
+            field("prompt", prompt)
+        }
         body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\nContent-Type: audio/wav\r\n\r\n".utf8))
         body.append(audio)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
@@ -73,7 +77,7 @@ final class Transcriber {
             if error != nil {
                 if retriesLeft > 0 {
                     DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) {
-                        self.attempt(audio: audio, language: language, retriesLeft: retriesLeft - 1, completion: completion)
+                        self.attempt(audio: audio, prompt: prompt, language: language, retriesLeft: retriesLeft - 1, completion: completion)
                     }
                 } else {
                     completion(nil)
@@ -89,7 +93,10 @@ final class Transcriber {
                 return
             }
             // The server emits one line per segment; join them back into flowing text.
+            // A segment that starts a new word carries its own leading space, and one
+            // that splits a word ("ahor" / "ita") has none, so drop the newlines as is.
             let flat = text
+                .replacingOccurrences(of: "\n", with: "")
                 .components(separatedBy: .whitespacesAndNewlines)
                 .filter { !$0.isEmpty }
                 .joined(separator: " ")
