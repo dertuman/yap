@@ -9,6 +9,9 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 swiftc -O Sources/*.swift -o "$APP/Contents/MacOS/Yap"
 cp Info.plist "$APP/Contents/Info.plist"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+# Call copilot command center: bundled copy, plus the source path so a checkout runs live edits.
+rsync -a --exclude node_modules callpilot "$APP/Contents/Resources/"
+/usr/libexec/PlistBuddy -c "Add :YapSourceDir string $PWD" "$APP/Contents/Info.plist"
 # A stable signing identity keeps the Accessibility grant across rebuilds.
 # Ad-hoc signatures change every build, which makes macOS forget the grant.
 IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Apple Development/{print $2; exit}')

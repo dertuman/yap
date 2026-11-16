@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statsMenu: NSMenu!
     private let stats = Stats.shared
     private var player: NSSound?
+    private let copilot = CallCopilot()
+    private var callItem: NSMenuItem!
+    private var callStatusItem: NSMenuItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -29,6 +32,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         transcriber.startServer()
         installHotKey()
+
+        copilot.onChange = { [weak self] in self?.refreshCallState() }
+        copilot.startPolling()
+    }
+
+    private func refreshCallState() {
+        DispatchQueue.main.async {
+            let on = self.copilot.capturing
+            self.callItem.title = on ? "End Call" : "Start Call Copilot"
+            self.callStatusItem.isHidden = self.copilot.lastError == nil
+            self.callStatusItem.title = self.copilot.lastError ?? ""
+            self.setIcon(on ? "waveform.circle.fill" : "mic", tint: on ? .systemOrange : nil)
+        }
+    }
+
+    @objc private func toggleCall() {
+        copilot.toggleCall()
+    }
+
+    @objc private func openCommandCenter() {
+        copilot.openCommandCenter()
     }
 
     /// The trigger needs Input Monitoring. Pasting the result needs Accessibility.
@@ -41,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         transcriber.stopServer()
+        copilot.shutdown()
     }
 
     private func buildMenu() -> NSMenu {
@@ -52,6 +77,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accessItem = NSMenuItem(title: "Open Accessibility Settings", action: #selector(openAccessibility), keyEquivalent: "")
         accessItem.target = self
         menu.addItem(accessItem)
+        menu.addItem(.separator())
+
+        callItem = NSMenuItem(title: "Start Call Copilot", action: #selector(toggleCall), keyEquivalent: "")
+        callItem.target = self
+        callItem.toolTip = "Transcribe your mic and the Mac's audio locally, map the call into topics and send decisions to your agent."
+        menu.addItem(callItem)
+        let center = NSMenuItem(title: "Open Command Center", action: #selector(openCommandCenter), keyEquivalent: "")
+        center.target = self
+        menu.addItem(center)
+        callStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        callStatusItem.isEnabled = false
+        callStatusItem.isHidden = true
+        menu.addItem(callStatusItem)
         menu.addItem(.separator())
 
         let triggerMenu = NSMenu()
@@ -242,6 +280,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setIcon(_ name: String, tint: NSColor? = nil) {
+        // Between dictations, the menu bar shows that a call is being captured.
+        var name = name
+        var tint = tint
+        if name == "mic" && tint == nil && copilot.capturing {
+            name = "waveform.circle.fill"
+            tint = .systemOrange
+        }
         DispatchQueue.main.async {
             var image = NSImage(systemSymbolName: name, accessibilityDescription: "Yap")
             if let tint {

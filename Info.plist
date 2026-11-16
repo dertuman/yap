@@ -20,6 +20,8 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>In call mode Yap transcribes the other side of your call on this Mac.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Yap records your voice to transcribe it where your cursor is.</string>
 </dict>

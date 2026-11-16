@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yap Call Copilot</title>
+  <link rel="icon" href="/logo.svg">
+  <link rel="stylesheet" href="/style.css">
+  <script>
+    // Theme and density apply before first paint so the page never flashes the wrong one.
+    try {
+      const p = JSON.parse(localStorage.getItem('callpilot.prefs') || '{}');
+      if (p.theme && p.theme !== 'auto') document.documentElement.dataset.theme = p.theme;
+      else if (p.theme === 'auto') delete document.documentElement.dataset.theme;
+      if (p.density) document.documentElement.dataset.density = p.density;
+    } catch {}
+  </script>
+</head>
+<body>
+  <header class="master">
+    <a class="brand" href="#/live" aria-label="Call copilot, live desk">
+      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><path d="M5 4h16v14H11l-6 5V4Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M9 9h8M9 13h5" stroke="currentColor" stroke-width="1.5"/></svg>
+      <span>Call copilot</span>
+    </a>
+    <nav class="tabs" id="nav" aria-label="Sections"></nav>
+    <div class="master-right">
+      <div class="health" id="health"></div>
+      <button class="btn ghost palette-open" data-act="palette" aria-label="Search and commands">
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
+        <span>Search and commands</span><kbd>⌘K</kbd>
+      </button>
+    </div>
+    <a id="recordingNotice" class="recording-notice" href="#/live" hidden aria-label="Active call, return to call">
+      <span class="recording-dot" aria-hidden="true"></span>
+      <strong id="recordingLabel">Call active</strong>
+      <span id="recordingClock">0:00</span>
+      <span id="recordingSources"></span>
+      <span class="recording-return">Return to call →</span>
+    </a>
+  </header>
+
+  <main id="main" tabindex="-1"></main>
+
+  <dialog id="palette" class="palette" aria-label="Search and commands">
+    <input id="paletteInput" type="text" placeholder="Find a call, something said, or a command" autocomplete="off" spellcheck="false" aria-controls="paletteList">
+    <div id="paletteList" class="palette-list" role="listbox"></div>
+    <footer><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></footer>
+  </dialog>
+
+  <div id="menu" class="menu" popover></div>
+  <div id="tip" class="tip" role="tooltip" hidden></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
