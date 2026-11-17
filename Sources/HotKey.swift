@@ -3,13 +3,23 @@ import CoreGraphics
 
 /// Watches whichever modifier key the user picked. Hold it to record push-to-talk style,
 /// or tap it (< 0.4s) to latch recording on until the next tap.
-/// Pressing any other key while holding cancels, so real shortcuts still work.
+/// Pressing any other key while holding cancels, so real shortcuts still work. A press that
+/// joins another modifier (both ⌘ keys for a QuickShot chord, say) neither starts nor stops.
 final class HotKey {
     private enum State {
         case idle
         case held(since: Date)
         case latched
+        /// Pressed while latched: stops on release, unless it became a chord meanwhile.
+        case stopping(chord: Bool)
+        /// Pressed together with another modifier: ignored until released.
+        case ignored
     }
+
+    /// Every side-specific modifier bit (IOLLEvent.h) plus fn.
+    private static let allModifierMasks: UInt64 =
+        0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x2000
+        | CGEventFlags.maskSecondaryFn.rawValue
 
     /// Held weakly so a key event in flight can't use a HotKey that stop() has released.
     private final class Owner {
@@ -134,11 +144,21 @@ final class HotKey {
             return
         }
         if type == .flagsChanged {
-            guard event.getIntegerValueField(.keyboardEventKeycode) == key.keyCode else { return }
-            let isDown = event.flags.rawValue & key.flagMask != 0
+            let flags = event.flags.rawValue
+            let otherHeld = flags & Self.allModifierMasks & ~key.flagMask != 0
+            guard event.getIntegerValueField(.keyboardEventKeycode) == key.keyCode else {
+                // Another modifier went down: a chord, not a trigger press.
+                guard otherHeld else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.stopped else { return }
+                    self.otherKeyDown()
+                }
+                return
+            }
+            let isDown = flags & key.flagMask != 0
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.stopped else { return }
-                isDown ? self.triggerDown() : self.triggerUp()
+                isDown ? self.triggerDown(otherHeld: otherHeld) : self.triggerUp()
             }
         } else if type == .keyDown {
             DispatchQueue.main.async { [weak self] in
@@ -148,32 +168,54 @@ final class HotKey {
         }
     }
 
-    private func triggerDown() {
+    private func triggerDown(otherHeld: Bool) {
         switch state {
         case .idle:
-            state = .held(since: Date())
-            onStart()
+            if otherHeld {
+                state = .ignored
+            } else {
+                state = .held(since: Date())
+                onStart()
+            }
         case .latched:
-            state = .idle
-            onStop()
-        case .held:
+            state = .stopping(chord: otherHeld)
+        case .held, .stopping, .ignored:
             break
         }
     }
 
     private func triggerUp() {
-        guard case .held(let since) = state else { return }
-        if Date().timeIntervalSince(since) < 0.4 {
-            state = .latched
-        } else {
+        switch state {
+        case .held(let since):
+            if Date().timeIntervalSince(since) < 0.4 {
+                state = .latched
+            } else {
+                state = .idle
+                onStop()
+            }
+        case .stopping(let chord):
+            if chord {
+                state = .latched
+            } else {
+                state = .idle
+                onStop()
+            }
+        case .ignored:
             state = .idle
-            onStop()
+        case .idle, .latched:
+            break
         }
     }
 
     private func otherKeyDown() {
-        guard case .held = state else { return }
-        state = .idle
-        onCancel()
+        switch state {
+        case .held:
+            state = .idle
+            onCancel()
+        case .stopping:
+            state = .stopping(chord: true)
+        default:
+            break
+        }
     }
 }
