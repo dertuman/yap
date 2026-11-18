@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyze } from './brain.mjs';
+import { ask } from './ask.mjs';
 import * as t3 from './t3.mjs';
 import * as engines from './whisper.mjs';
 
@@ -597,6 +598,69 @@ function manualNote(c, text, kind) {
   return cp;
 }
 
+// ---------- ask: quick questions about a call, kept as chats on the call ----------
+
+const asking = new Map(); // chatId -> { cancel }
+const chatMeta = (c, ch) => ({ ...ch, callId: c.id });
+
+async function askCall(c, text, chatId) {
+  if (!text) throw new Error('empty question');
+  c.chats ||= [];
+  let chat = chatId && c.chats.find((x) => x.id === chatId);
+  if (chatId && !chat) throw new Error('no such chat');
+  if (chat && asking.has(chat.id)) throw new Error('still answering');
+  if (!chat) {
+    chat = { id: randomUUID().slice(0, 8), title: text.length > 80 ? text.slice(0, 77) + '...' : text, createdAt: Date.now(), messages: [] };
+    c.chats.unshift(chat);
+  }
+  const now = Date.now();
+  chat.messages.push({ role: 'me', text, at: now });
+  const answer = { role: 'ai', text: '', at: now, pending: true };
+  chat.messages.push(answer);
+  chat.updatedAt = now;
+  touch(c, 'chats');
+  emit('chat', chatMeta(c, chat));
+
+  let last = 0;
+  const job = ask(c, { ...chat, messages: chat.messages.slice(0, -1) }, {
+    model: settings.brainModel,
+    onDelta: (t) => {
+      answer.text = t;
+      if (Date.now() - last > 60) {
+        last = Date.now();
+        emit('chat-delta', { callId: c.id, chatId: chat.id, text: t });
+      }
+    },
+  });
+  asking.set(chat.id, job);
+  job.done
+    .then((r) => Object.assign(answer, { text: r.text, cost: r.cost, ms: r.ms }))
+    .catch((e) => {
+      answer.text = job.partial() || answer.text;
+      answer.error = e.message;
+    })
+    .finally(() => {
+      asking.delete(chat.id);
+      delete answer.pending;
+      chat.updatedAt = Date.now();
+      touch(c, 'chats');
+      emit('chat', chatMeta(c, chat));
+    });
+  return chatMeta(c, chat);
+}
+
+/** Every chat across calls, newest first, for the history list. */
+function allChats() {
+  const out = [];
+  for (const id of callIds()) {
+    const c = getCall(id);
+    for (const ch of c?.chats || []) {
+      out.push({ callId: c.id, callTitle: c.title, id: ch.id, title: ch.title, updatedAt: ch.updatedAt || ch.createdAt, turns: ch.messages.filter((m) => m.role === 'me').length, last: ch.messages.at(-1)?.text?.slice(0, 200) || '' });
+    }
+  }
+  return out.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
 // Watch the chats every call started until they finish.
 const ACTIVE = ['queued', 'running'];
 setInterval(async () => {
@@ -724,6 +788,7 @@ function summarize(c) {
       failed: count((x) => x.status === 'failed'),
       kept: count((x) => x.status === 'kept'),
       todos: count((x) => x.kind === 'human' && x.status === 'kept' && !x.doneAt),
+      chats: (c.chats || []).length,
     },
     // Speech blocks as [ms from start, ms long, 0 me | 1 them] and checkpoints as [ms from start, kind, status].
     strip: {
@@ -764,6 +829,10 @@ function search(q) {
     }
     for (const x of c.checkpoints) {
       if (match([x.question, x.conclusion, x.reply].join(' '))) hits.push({ type: 'checkpoint', kind: x.kind, status: x.status, text: x.question, more: x.conclusion, n: x.atSeg, t: x.at, cp: x.id });
+    }
+    for (const ch of c.chats || []) {
+      const hit = ch.messages.find((m) => match(m.text));
+      if (hit) hits.push({ type: 'chat', text: ch.title, more: hit.role === 'ai' ? hit.text.slice(0, 240) : '', chat: ch.id });
     }
     for (const s of c.segments) {
       if (match(s.text)) hits.push({ type: 'segment', speaker: s.speaker, text: s.text, n: s.n, t: s.t });
@@ -840,7 +909,7 @@ const meta = (c) =>
   };
 
 function snapshot() {
-  return { call: call && { ...meta(call), segments: call.segments, islands: call.islands, checkpoints: call.checkpoints, mood: call.mood }, pipeline, settings };
+  return { call: call && { ...meta(call), segments: call.segments, islands: call.islands, checkpoints: call.checkpoints, mood: call.mood, chats: call.chats || [] }, pipeline, settings };
 }
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
@@ -970,6 +1039,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/calls') return json(res, 200, listCalls());
     if (req.method === 'GET' && p === '/api/search') return json(res, 200, search(url.searchParams.get('q') || ''));
     if (req.method === 'GET' && p === '/api/outcomes') return json(res, 200, outcomes());
+    if (req.method === 'GET' && p === '/api/chats') return json(res, 200, allChats());
     if (req.method === 'GET' && p === '/api/settings') return json(res, 200, settings);
     if (req.method === 'POST' && p === '/api/settings') {
       applySettings(await read());
@@ -1046,6 +1116,18 @@ const server = createServer(async (req, res) => {
       if (sub === 'tasks') return json(res, 200, await manualTask(c, String(b.text || '').trim()));
       if (sub === 'notes') return json(res, 200, manualNote(c, String(b.text || '').trim(), b.kind));
       if (sub === 'recap') return json(res, 200, await sendRecap(c));
+      if (sub === 'ask') return json(res, 200, await askCall(c, String(b.text || '').trim(), b.chatId || null));
+      if ((k = sub.match(/^chats\/([\w-]+)\/(stop|delete)$/))) {
+        const i = (c.chats || []).findIndex((x) => x.id === k[1]);
+        if (i < 0) return json(res, 404, { error: 'no such chat' });
+        if (k[2] === 'stop') asking.get(k[1])?.cancel();
+        else {
+          asking.get(k[1])?.cancel();
+          c.chats.splice(i, 1);
+          touch(c, 'chats');
+        }
+        return json(res, 200, { ok: true });
+      }
       // Fix what Whisper misheard. An empty text removes the line.
       if ((k = sub.match(/^segments\/(\d+)$/))) {
         const seg = c.segments[Number(k[1])];

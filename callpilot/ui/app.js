@@ -55,7 +55,7 @@ function applyPrefs() {
 }
 
 const freshUi = () => ({
-  topic: null, filter: 'all', find: '', speaker: 'all', cue: null, editing: null, tab: 'focus',
+  topic: null, filter: 'all', find: '', speaker: 'all', cue: null, editing: null, tab: 'focus', chat: null,
   topicOrder: [], open: new Set(), toggled: new Set(), follow: true, mode: 'task', drafts: {}, lastCue: null,
 });
 
@@ -328,6 +328,26 @@ function connect() {
       renderStrip();
     }
   }));
+  // Ask: answers stream in as deltas, then the whole chat lands once it settles.
+  const callById = (id) => [S.live, S.past].find((c) => c?.id === id);
+  es.addEventListener('chat', (e) => {
+    const ch = JSON.parse(e.data);
+    const c = callById(ch.callId);
+    if (!c) return;
+    c.chats ||= [];
+    const i = c.chats.findIndex((x) => x.id === ch.id);
+    if (i >= 0) c.chats[i] = ch;
+    else c.chats.unshift(ch);
+    if (cur() === c) renderAsk();
+  });
+  es.addEventListener('chat-delta', (e) => {
+    const d = JSON.parse(e.data);
+    const ch = callById(d.callId)?.chats?.find((x) => x.id === d.chatId);
+    const m = ch?.messages.at(-1);
+    if (!m || m.role !== 'ai') return;
+    m.text = d.text;
+    if (cur()?.id === d.callId) renderAsk();
+  });
   es.addEventListener('pipeline', (e) => {
     S.pipeline = JSON.parse(e.data);
     if (cur() === S.live) renderPipeline();
@@ -528,7 +548,7 @@ function mountCall() {
     <header class="callhead" id="callhead"></header>
     <div class="coltabs" id="coltabs"></div><button class="btn panel-close" id="panelClose" data-act="panel-close" hidden>Close <kbd>esc</kbd></button><button class="btn refresh-record" id="refreshRecord" data-act="refresh-record" hidden>Updates available</button>
     <div class="cols" id="cols">
-      <section id="detailPanel" hidden></section><section id="topicsView" hidden></section><section id="reviewView" hidden></section>
+      <section id="detailPanel" hidden></section><section id="askView" hidden></section><section id="topicsView" hidden></section><section id="reviewView" hidden></section>
       <section class="col main" aria-label="Topics and decisions">
         <div class="mainscroll">
           <div class="timeline" id="strip"></div>
@@ -834,15 +854,119 @@ function renderTabs() {
  const c = cur(), el = $('#coltabs');
  if (!c || !el) return;
  const tab = S.ui.tab;
- el.innerHTML = `<div class="view-tabs" role="tablist" aria-label="Call views">${[['focus',onAir(c) ? 'Live call' : 'Overview'],['rundown','Decisions'],['topics','Topics'],['script','Transcript'],['details','Details']].map(([id,label]) => `<button role="tab" data-act="tab" data-tab="${id}" aria-selected="${tab === id}" class="${tab === id ? 'on' : ''}">${label}</button>`).join('')}</div><button class="btn write-task ${tab === 'compose' ? 'on' : ''}" data-act="compose-open">Write a task <kbd>T</kbd></button>`;
+ el.innerHTML = `<div class="view-tabs" role="tablist" aria-label="Call views">${[['focus',onAir(c) ? 'Live call' : 'Overview'],['ask','Ask'],['rundown','Decisions'],['topics','Topics'],['script','Transcript'],['details','Details']].map(([id,label]) => `<button role="tab" data-act="tab" data-tab="${id}" aria-selected="${tab === id}" class="${tab === id ? 'on' : ''}">${label}</button>`).join('')}</div><button class="btn write-task ${tab === 'compose' ? 'on' : ''}" data-act="compose-open">Write a task <kbd>T</kbd></button>`;
  $('#cols').dataset.tab = tab;
  $('#main').classList.toggle('is-live', onAir(c));
- for (const [id,view] of [['detailPanel','details'],['topicsView','topics'],['composeView','compose'],['reviewView','review']]) $('#'+id).hidden = tab !== view;
+ for (const [id,view] of [['askView','ask'],['detailPanel','details'],['topicsView','topics'],['composeView','compose'],['reviewView','review']]) $('#'+id).hidden = tab !== view;
  $('#panelClose').hidden = true;
  $('#refreshRecord').hidden = !(['rundown','topics'].includes(tab) && $(tab === 'topics' ? '#topicsView' : '#rundown').dataset.update);
  renderDetails();
+ renderAsk();
 }
 
+
+// ---------- ask ----------
+
+const ASK_STARTERS = [
+  'List every item we talked about',
+  'What did they agree to or commit to?',
+  'What questions were left open?',
+  'What did they say about price, timing and next steps?',
+];
+
+/** Answers come back as light Markdown with [#n] citations to transcript lines. */
+function askMarkdown(c, text) {
+  const cite = (nums) => nums.map((n) => {
+    const s = c.segments.find((x) => (x.n ?? c.segments.indexOf(x)) === n);
+    return s ? `<button class="ask-cite" data-act="ask-cite" data-n="${n}" data-tip="${esc(s.text.slice(0, 160))}">${clock(s.t - c.startedAt)}</button>` : '';
+  }).join('');
+  const inline = (t) => esc(t)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[((?:#\d+(?:\s*[-–]\s*#?\d+)?[\s,;]*)+)\]/g, (_, inner) => {
+      const nums = [];
+      for (const [, a, b] of inner.matchAll(/#(\d+)(?:\s*[-–]\s*#?(\d+))?/g)) {
+        nums.push(Number(a));
+        if (b && Number(b) > Number(a)) nums.push(Number(b));
+      }
+      return cite(nums);
+    });
+  const out = [];
+  let list = null;
+  const close = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  for (const raw of text.split('\n')) {
+    const line = raw.trimEnd();
+    const ul = line.match(/^\s*[-*•]\s+(.*)/), ol = line.match(/^\s*\d+[.)]\s+(.*)/), h = line.match(/^#{1,4}\s+(.*)/);
+    if (ul || ol) {
+      const tag = ul ? 'ul' : 'ol';
+      if (list !== tag) { close(); out.push(`<${tag}>`); list = tag; }
+      out.push(`<li>${inline((ul || ol)[1])}</li>`);
+    } else if (!line.trim()) close();
+    else { close(); out.push(h ? `<h3>${inline(h[1])}</h3>` : `<p>${inline(line)}</p>`); }
+  }
+  close();
+  return out.join('');
+}
+
+function mountAsk(el) {
+  el.innerHTML = `<div class="ask">
+    <aside class="ask-list" id="askList" aria-label="Questions about this call"></aside>
+    <div class="ask-main">
+      <div class="ask-thread" id="askThread" aria-live="polite"></div>
+      <form class="ask-form" id="askForm" data-form="ask">
+        <textarea id="askInput" name="text" rows="2" placeholder="Ask anything about this call" aria-label="Ask about this call"></textarea>
+        <div class="composer-foot"><span><kbd>↵</kbd> ask · <kbd>⇧↵</kbd> new line</span><span class="ask-buttons"><button type="button" class="btn" data-act="ask-stop" id="askStop" hidden>${icon('stop')}Stop</button><button class="btn primary" id="askSend">${icon('send')}Ask</button></span></div>
+      </form>
+    </div>
+  </div>`;
+}
+
+function renderAsk() {
+  const c = cur(), el = $('#askView');
+  if (!c || !el || el.hidden) return;
+  if (!el.firstChild) mountAsk(el);
+  const chats = c.chats || [];
+  let chat = chats.find((x) => x.id === S.ui.chat);
+  if (S.ui.chat && !chat) S.ui.chat = null;
+  const busy = chat?.messages.at(-1)?.pending;
+  $('#askList').innerHTML = `<button class="btn ask-new ${chat ? '' : 'on'}" data-act="ask-new">${icon('edit')}New question</button>${chats.length ? `<div class="ask-past">${chats.map((x) => `<button class="ask-item ${x.id === S.ui.chat ? 'on' : ''}" data-act="ask-open" data-chat="${x.id}"><span>${esc(x.title)}</span><em>${x.messages.at(-1)?.pending ? 'Answering' : dayLabel(x.updatedAt || x.createdAt) + ', ' + hm(x.updatedAt || x.createdAt)}</em></button>`).join('')}</div>` : ''}`;
+  const thread = $('#askThread');
+  const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 120;
+  const key = chat ? chat.id : 'new';
+  const switched = thread.dataset.chat !== key;
+  thread.dataset.chat = key;
+  if (!chat) {
+    thread.innerHTML = `<div class="ask-empty"><h1>Ask about this call</h1><p>Answers come from the transcript, topics and decisions, with links to the moments they cite.</p><div class="ask-starters">${ASK_STARTERS.map((q) => `<button class="btn" data-act="ask-suggest">${esc(q)}</button>`).join('')}</div></div>`;
+  } else {
+    thread.innerHTML = `<div class="ask-head"><h2>${esc(chat.title)}</h2><span><button class="btn small bare" data-act="ask-copy">${icon('copy')}Copy answer</button><button class="btn small bare" data-act="ask-delete">${icon('trash')}Delete</button></span></div>` + chat.messages.map((m) => m.role === 'me'
+      ? `<div class="ask-msg me"><p>${esc(m.text)}</p></div>`
+      : `<div class="ask-msg ai ${m.pending ? 'pending' : ''}">${m.text ? askMarkdown(c, m.text) : m.pending ? '<p class="ask-wait">Reading the call</p>' : ''}${m.error ? `<p class="ask-error">${esc(m.error === 'stopped' ? 'Stopped.' : m.error)}</p>` : ''}</div>`).join('');
+  }
+  if (switched || nearBottom) thread.scrollTop = thread.scrollHeight;
+  $('#askStop').hidden = !busy;
+  $('#askSend').disabled = !!busy;
+  $('#askInput').placeholder = chat ? 'Ask a follow-up' : 'Ask anything about this call';
+}
+
+async function askSend(text) {
+  const c = cur();
+  if (!c || !text) return;
+  const r = await callApi('/ask', { text, chatId: S.ui.chat });
+  c.chats ||= [];
+  const i = c.chats.findIndex((x) => x.id === r.id);
+  if (i >= 0) c.chats[i] = r;
+  else c.chats.unshift(r);
+  S.ui.chat = r.id;
+  renderAsk();
+}
+
+function openAsk(text) {
+  S.ui.tab = 'ask';
+  renderTabs();
+  const box = $('#askInput');
+  if (text) askSend(text).catch(fail);
+  else box?.focus();
+}
 
 function renderDetails() {
  const c = cur(), el = $('#detailPanel');
@@ -1292,6 +1416,17 @@ const ACT = {
  async 'review-confirm'(el) { el.disabled = true; try { const result = await review.run(); if (result === false) el.disabled = false; else el.textContent = 'Done'; } catch(e) { el.disabled = false; fail(e); } },
   'refresh-record'() { delete $('#rundown').dataset.update; renderRundown(); $('#refreshRecord').hidden = true; },
   'panel-close'() { S.ui.tab = 'focus'; $('#refreshRecord').hidden = true; renderTabs(); },
+  'ask-new'() { S.ui.chat = null; renderAsk(); $('#askInput').focus(); },
+  'ask-open'(el) { S.ui.chat = el.dataset.chat; renderAsk(); },
+  'ask-suggest'(el) { askSend(el.textContent).catch(fail); },
+  'ask-cite'(el) { jumpTo(Number(el.dataset.n)); },
+  'ask-stop'() { if (S.ui.chat) callApi(`/chats/${S.ui.chat}/stop`).catch(fail); },
+  'ask-copy'() { const m = cur()?.chats?.find((x) => x.id === S.ui.chat)?.messages.filter((x) => x.role === 'ai').at(-1); if (m?.text) copy(m.text.replace(/\s*\[#[^\]]*\]/g, ''), 'Answer copied.'); },
+  'ask-delete'() {
+    const c = cur(), id = S.ui.chat;
+    if (!id) return;
+    callApi(`/chats/${id}/delete`).then(() => { c.chats = (c.chats || []).filter((x) => x.id !== id); S.ui.chat = null; renderAsk(); }).catch(fail);
+  },
   'compose-open'() { S.ui.tab = 'compose'; renderTabs(); $('#askText').focus(); },
   palette: () => openPalette(),
   async start() {
@@ -1645,6 +1780,17 @@ document.addEventListener('submit', async (e) => {
       box.value = text;
       fail(err);
     }
+  } else if (kind === 'ask') {
+    const box = $('#askInput');
+    const text = box.value.trim();
+    if (!text) return box.focus();
+    box.value = '';
+    try {
+      await askSend(text);
+    } catch (err) {
+      box.value = text;
+      fail(err);
+    }
   } else if (kind === 'followup') {
     const input = form.text;
     const text = input.value.trim();
@@ -1669,6 +1815,10 @@ document.addEventListener('keydown', (e) => {
   if (t.id === 'askText' && e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     return $('#composer').requestSubmit();
+  }
+  if (t.id === 'askInput' && e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    return $('#askForm').requestSubmit();
   }
   const typing = t.closest?.('input, textarea, select, [contenteditable="true"]');
   if (e.key === 'Escape') {
@@ -1703,6 +1853,10 @@ document.addEventListener('keydown', (e) => {
   if (key === 't') {
     e.preventDefault();
     ACT['compose-open']();
+  }
+  if (key === 'a') {
+    e.preventDefault();
+    openAsk();
   }
 });
 
@@ -1739,6 +1893,7 @@ function commands() {
   else list.unshift({ label: 'Start a call', icon: 'play', run: ACT.start });
   if (c) {
     list.push(
+      { label: 'Ask about this call', hint: 'A', icon: 'search', run: () => openAsk() },
       { label: 'Drop a bookmark at this moment', hint: 'B', icon: 'note', run: ACT.bookmark },
       { label: 'Draft the follow-up message', icon: 'mail', run: ACT.followup },
       { label: 'Download this call as Markdown', icon: 'download', run: () => download(c.id, c.title) },
@@ -1762,6 +1917,7 @@ function paletteItems(q) {
     items.push({ label: c.title || 'Untitled call', sub: `${dayLabel(c.startedAt)}, ${hm(c.startedAt)} · ${span(c.durationMs)}`, icon: 'history', run: () => (location.hash = c.live ? '#/live' : '#/call/' + c.id) });
     if (items.length > 40) break;
   }
+  if (f && cur()) items.unshift({ label: `Ask this call: "${q.trim()}"`, icon: 'send', run: () => openAsk(q.trim()) });
   if (f) {
     items.push({
       label: `Search every call for "${q.trim()}"`, icon: 'search',
